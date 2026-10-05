@@ -43,15 +43,112 @@ st.caption(f"{len(games):,} games · {seasons[0]}–{seasons[1]} · {', '.join(g
            f"crew = referee's crew (nflverse). League avg: {games['penalties'].mean():.1f} accepted penalties/game, "
            f"home ATS {games['home_cover'].mean():.1%}, overs {games['over'].mean():.1%}.")
 
-tabs = st.tabs(["Leaderboard", "Crew Profile", "Team × Crew", "Betting", "This Week", "Methodology"])
+t_high, t_lead, t_crew, t_team, t_bet, t_week, t_meth = st.tabs(["Highlights", "Leaderboard", "Crew Profile", "Team × Crew", "Betting", "This Week", "Methodology"])
 
 pct = lambda s: s.map(lambda v: f"{v:.1%}" if pd.notna(v) else "—")
 
+GLOSSARY = """
+| Column | What it means |
+|---|---|
+| **Flags/g** | Every flag thrown per game, including declined and offsetting flags. |
+| **Pens/g** | Accepted (enforced) penalties per game, both teams combined. League average is about 12–13. |
+| **Pen yds/g** | Penalty yards enforced per game, both teams combined. |
+| **Pens vs expected** | Penalties per game *above or below what the two teams normally commit*. For each game we add up each team's season average, compare with what this crew called, then pull the result toward 0 for crews with few games. **+1.0 = one extra flag per game** beyond what those teams usually draw. This is the fairest "flag-happy" number, because it doesn't punish a crew for drawing sloppy teams. |
+| **Home−away pens** | Average of (home team penalties − away team penalties) per game. **Negative = the away team gets flagged more** (home-friendly whistle); positive = the home team gets flagged more. League average is near 0. |
+| **Home win%** | Share of this crew's games that the home team won (ties count half). League average is about 55%. It describes outcomes, not necessarily the crew's doing. |
+| **Home ATS** | Home team's record against the closing spread in this crew's games (wins-losses, pushes excluded). |
+| **O/U, Over%** | Games that went over-under the closing total, and the share that went over. |
+| **Avg total** | Average combined points per game. |
+"""
+
+
+def top5(df, col, label, fmt, ascending=False, record=None):
+    d = df.dropna(subset=[col]).sort_values(col, ascending=ascending).head(5)
+    out = pd.DataFrame({"Referee": d["referee"], label: d[col].map(fmt.format)})
+    if record:
+        out["Record"] = d[record]
+    out["Games"] = d["games"]
+    return out
+
+
+def card(slot, title, note, table):
+    with slot.container(border=True):
+        st.markdown(f"**{title}**")
+        st.caption(note)
+        st.dataframe(table, hide_index=True, width="stretch", height=213)
+
+
+# ---------------- Highlights ----------------
+with t_high:
+    if summary.empty:
+        st.info("No crews match the filters.")
+    else:
+        st.subheader("Notable crew stats")
+        st.caption(f"Crews with ≥{min_games} games, {seasons[0]}–{seasons[1]}. Change the window in the sidebar.")
+        k = st.columns(5)
+        k[0].metric("League pens / game", f"{games['penalties'].mean():.1f}")
+        k[1].metric("League pen yds / game", f"{games['penalty_yards'].mean():.0f}")
+        k[2].metric("Home win %", f"{games['home_win'].mean():.1%}")
+        k[3].metric("Home ATS %", f"{games['home_cover'].mean():.1%}")
+        k[4].metric("Over %", f"{games['over'].mean():.1%}")
+
+        with st.expander("What do these columns mean?"):
+            st.markdown(GLOSSARY)
+
+        st.markdown("#### Penalty tendencies")
+        st.caption("These **persist from season to season**, so they are real crew habits worth planning around.")
+        r = st.columns(3)
+        card(r[0], "🚩 Most penalties / game", "Accepted penalties, both teams",
+             top5(summary, "penalties_pg", "Pens/g", "{:.1f}"))
+        card(r[1], "📏 Most penalty yards / game", "Enforced yards, both teams",
+             top5(summary, "pen_yards_pg", "Yds/g", "{:.0f}"))
+        card(r[2], "🧘 Fewest penalties / game", "Lets them play",
+             top5(summary, "penalties_pg", "Pens/g", "{:.1f}", ascending=True))
+        r = st.columns(3)
+        card(r[0], "📈 Most flags vs. expected", "Adjusted for the teams they worked; the fairest 'flag-happy' ranking",
+             top5(summary, "pen_resid_eb", "vs exp", "{:+.2f}"))
+        card(r[1], "🏠 Most home-friendly whistle", "Away team penalized more than home (home − away pens/g)",
+             top5(summary, "home_pen_diff_pg", "Home−away", "{:+.2f}", ascending=True))
+        card(r[2], "✈️ Toughest on the home team", "Home team penalized more than away",
+             top5(summary, "home_pen_diff_pg", "Home−away", "{:+.2f}"))
+
+        mix = M.penalty_mix(flags, games)
+        mix = mix[mix["referee"].isin(summary["referee"])].sort_values("index", ascending=False)
+        sig = mix.drop_duplicates("referee").head(5)
+        r = st.columns(3)
+        card(r[0], "🎯 Signature calls", "Each crew's most over-called penalty category vs. league",
+             pd.DataFrame({"Referee": sig["referee"], "Category": sig["group"],
+                           "vs league": (sig["index"] - 100).map("{:+.0f}%".format)}))
+        card(r[1], "🔁 Most flags thrown (incl. declined)", "Total laundry on the field",
+             top5(summary, "flags_pg", "Flags/g", "{:.1f}"))
+        card(r[2], "🏈 Highest-scoring games", "Avg combined points",
+             top5(summary, "avg_total", "Pts/g", "{:.1f}"))
+
+        st.markdown("#### Results & betting")
+        st.warning("These splits **do not persist from season to season** (see *Methodology*), and none are "
+                   "statistically significant after correcting for testing many crews. Read them as history, not as predictions.")
+        r = st.columns(3)
+        card(r[0], "🏟️ Best home-team win %", "Home team won the game",
+             top5(summary, "home_win_pct", "Home win%", "{:.1%}"))
+        card(r[1], "🛫 Worst home-team win %", "Road teams thrive",
+             top5(summary, "home_win_pct", "Home win%", "{:.1%}", ascending=True))
+        card(r[2], "💵 Best home ATS", "Home team vs. the closing spread",
+             top5(summary, "home_ats_rate", "ATS%", "{:.1%}", record="home_ats_record"))
+        r = st.columns(3)
+        card(r[0], "📉 Worst home ATS", "Road team covers",
+             top5(summary, "home_ats_rate", "ATS%", "{:.1%}", ascending=True, record="home_ats_record"))
+        card(r[1], "⬆️ Highest over %", "Game total went over the closing line",
+             top5(summary, "over_rate", "Over%", "{:.1%}", record="over_record"))
+        card(r[2], "⬇️ Highest under %", "Game total stayed under",
+             top5(summary, "over_rate", "Over%", "{:.1%}", ascending=True, record="over_record"))
+
 # ---------------- Leaderboard ----------------
-with tabs[0]:
+with t_lead:
     st.subheader("Crew leaderboard")
     st.markdown("**Penalty tendencies are persistent and real; betting splits mostly are not** — see *Methodology*. "
                 "`vs expected` adjusts for the teams a crew happened to work, and is shrunk toward league average.")
+    with st.expander("What do these columns mean?"):
+        st.markdown(GLOSSARY)
     view = summary.assign(
         **{"Flags/g": summary["flags_pg"].round(1), "Pens/g": summary["penalties_pg"].round(1),
            "Pen yds/g": summary["pen_yards_pg"].round(0),
@@ -73,7 +170,7 @@ with tabs[0]:
     st.plotly_chart(fig, width="stretch")
 
 # ---------------- Crew profile ----------------
-with tabs[1]:
+with t_crew:
     refs = summary.sort_values("games", ascending=False)["referee"].tolist()
     if not refs:
         st.info("No crews match the filters.")
@@ -126,7 +223,7 @@ with tabs[1]:
                           "home_penalties", "away_penalties", "penalty_yards"]], hide_index=True, width="stretch")
 
 # ---------------- Team x Crew ----------------
-with tabs[2]:
+with t_team:
     team = st.selectbox("Team", sorted(team_games["team"].unique()))
     tvc = M.team_vs_crew(team_games, team)
     st.warning("Most team–crew pairs have fewer than 10 games. A 4-1 ATS record is entirely consistent with a coin "
@@ -146,7 +243,7 @@ with tabs[2]:
     st.plotly_chart(fig, width="stretch")
 
 # ---------------- Betting ----------------
-with tabs[3]:
+with t_bet:
     st.subheader("Against the spread & totals by crew")
     st.markdown(f"Dashed line = 50%. Dotted = **{BREAKEVEN_RATE:.2%} breakeven at -110**. "
                 "Hollow diamond = empirical-Bayes estimate (how much of the split we actually believe). "
@@ -171,7 +268,7 @@ with tabs[3]:
                     "avg_ats_margin", "avg_ou_margin"]].round(3), hide_index=True, width="stretch")
 
 # ---------------- This week ----------------
-with tabs[4]:
+with t_week:
     up = D["upcoming"]
     manual = MANUAL_DIR / "assignments.csv"
     if manual.exists():  # game_id,referee — fill in from Football Zebras when nflverse lags
@@ -192,7 +289,7 @@ with tabs[4]:
                      hide_index=True, width="stretch")
 
 # ---------------- Methodology ----------------
-with tabs[5]:
+with t_meth:
     st.subheader("Is it signal or noise? Year-over-year persistence")
     st.markdown("For each metric we correlate a crew's value in season *t* with the same crew in season *t+1*. "
                 "A real crew tendency persists (r clearly > 0). If r ≈ 0, last year's split tells you nothing "
