@@ -4,5 +4,4 @@ __pycache__/
 .pytest_cache/
 .ipynb_checkpoints/
 data/raw/
-data/processed/
 .DS_Store
